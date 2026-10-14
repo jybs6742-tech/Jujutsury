@@ -1,0 +1,1063 @@
+
+--// =========================================================
+--// ORBIT MENU + IMPULSO 5 - CORRIGIDO
+--// MOBILE / PC | PLAYERS + NPCs
+--// LOCK ON NA CABEÇA | ESP | AUTO TARGET
+--// ORBIT COM CÂMERA NO ALVO
+--// IMPULSO 100 | ON/OFF | SEM COOLDOWN
+--// =========================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then return end
+
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+--// LIMPAR EXECUÇÃO ANTERIOR
+_G.__OrbitImpulsoRunToken = (_G.__OrbitImpulsoRunToken or 0) + 1
+local RunToken = _G.__OrbitImpulsoRunToken
+
+for _, name in ipairs({"OrbitMenu", "ImpulsoAbility"}) do
+    local old = PlayerGui:FindFirstChild(name)
+    if old then old:Destroy() end
+end
+
+--// CONFIGURAÇÕES
+local ORBIT_SPEED = 100
+local DEFAULT_ORBIT_DISTANCE = 3
+local ORBIT_DISTANCE = 3
+
+local NORMAL_COLOR = Color3.fromRGB(50, 50, 50)
+local SELECTED_COLOR = Color3.fromRGB(255, 220, 0)
+local ON_COLOR = Color3.fromRGB(40, 170, 70)
+local OFF_COLOR = Color3.fromRGB(70, 70, 70)
+local LOCK_COLOR = Color3.fromRGB(50, 120, 220)
+
+--// VARIÁVEIS
+local selectedTarget
+local targetIsNPC = false
+local orbiting = false
+local lockOn = false
+local autoTarget = false
+local lockOnBeforeOrbit = false
+local destroyed = false
+local minimized = false
+local lastDirection
+local teleportTimer = 0
+local ESP
+local targetDeathConnection
+local showingNPCs = false
+
+--// IMPULSO
+local impulsoAtivo = false
+local velocidadeOriginal
+local humanoidImpulso
+local impulsoConnection
+
+--// LOCK ON: NOME ÚNICO DA ATUALIZAÇÃO DA CÂMERA
+local LockBindName = "OrbitLockOnAim_" .. tostring(LocalPlayer.UserId)
+
+--// GUI PRINCIPAL
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "OrbitMenu"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 100
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 210, 0, 300)
+Main.Position = UDim2.new(0, 20, 0.5, -150)
+Main.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+Main.BackgroundTransparency = 0.15
+Main.BorderSizePixel = 1
+Main.Active = true
+Main.Draggable = true
+Main.ZIndex = 10
+Main.Parent = ScreenGui
+
+--// HEADER
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 40)
+Header.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Header.BackgroundTransparency = 0.1
+Header.BorderSizePixel = 0
+Header.ZIndex = 11
+Header.Parent = Main
+
+local function MakeButton(parent, text, size, position, color, zindex)
+    local b = Instance.new("TextButton")
+    b.Size = size
+    b.Position = position
+    b.BackgroundColor3 = color
+    b.BackgroundTransparency = 0.05
+    b.BorderSizePixel = 0
+    b.Text = text
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.TextSize = 15
+    b.Font = Enum.Font.GothamBold
+    b.ZIndex = zindex or 12
+    b.Parent = parent
+    return b
+end
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -168, 1, 0)
+Title.Position = UDim2.new(0, 8, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "Orbit"
+Title.TextColor3 = Color3.new(1, 1, 1)
+Title.TextSize = 16
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.ZIndex = 12
+Title.Parent = Header
+
+local AutoButton = MakeButton(
+    Header, "A", UDim2.fromOffset(28, 28),
+    UDim2.new(1, -160, 0, 6), OFF_COLOR
+)
+
+local LockButton = MakeButton(
+    Header, "L", UDim2.fromOffset(28, 28),
+    UDim2.new(1, -128, 0, 6), NORMAL_COLOR
+)
+
+local NPCButton = MakeButton(
+    Header, "N", UDim2.fromOffset(28, 28),
+    UDim2.new(1, -96, 0, 6), NORMAL_COLOR
+)
+
+local MinimizeButton = MakeButton(
+    Header, "-", UDim2.fromOffset(28, 28),
+    UDim2.new(1, -64, 0, 6), NORMAL_COLOR
+)
+
+local CloseButton = MakeButton(
+    Header, "X", UDim2.fromOffset(28, 28),
+    UDim2.new(1, -32, 0, 6), Color3.fromRGB(120, 45, 45)
+)
+
+--// LISTA DE ALVOS
+local PlayerList = Instance.new("ScrollingFrame")
+PlayerList.Name = "PlayerList"
+PlayerList.Size = UDim2.new(1, -20, 0, 175)
+PlayerList.Position = UDim2.new(0, 10, 0, 48)
+PlayerList.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+PlayerList.BackgroundTransparency = 0.2
+PlayerList.BorderSizePixel = 1
+PlayerList.ScrollBarThickness = 4
+PlayerList.CanvasSize = UDim2.new()
+PlayerList.ZIndex = 11
+PlayerList.Parent = Main
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Padding = UDim.new(0, 3)
+UIListLayout.Parent = PlayerList
+
+--// DISTÂNCIA
+local DistanceLabel = Instance.new("TextLabel")
+DistanceLabel.Size = UDim2.fromOffset(75, 28)
+DistanceLabel.Position = UDim2.new(0, 10, 1, -68)
+DistanceLabel.BackgroundTransparency = 1
+DistanceLabel.Text = "Distância:"
+DistanceLabel.TextColor3 = Color3.new(1, 1, 1)
+DistanceLabel.TextSize = 13
+DistanceLabel.Font = Enum.Font.Gotham
+DistanceLabel.TextXAlignment = Enum.TextXAlignment.Left
+DistanceLabel.ZIndex = 11
+DistanceLabel.Parent = Main
+
+local DistanceBox = Instance.new("TextBox")
+DistanceBox.Size = UDim2.fromOffset(55, 28)
+DistanceBox.Position = UDim2.new(0, 82, 1, -68)
+DistanceBox.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+DistanceBox.BackgroundTransparency = 0.15
+DistanceBox.BorderSizePixel = 1
+DistanceBox.Text = "3"
+DistanceBox.TextColor3 = Color3.new(1, 1, 1)
+DistanceBox.PlaceholderText = "3"
+DistanceBox.TextSize = 13
+DistanceBox.Font = Enum.Font.Gotham
+DistanceBox.ClearTextOnFocus = false
+DistanceBox.ZIndex = 11
+DistanceBox.Parent = Main
+
+local OrbitButton = MakeButton(
+    Main, "Orbit: OFF", UDim2.new(1, -20, 0, 32),
+    UDim2.new(0, 10, 1, -36), OFF_COLOR, 11
+)
+
+OrbitButton.TextSize = 14
+
+local function UpdateDistance()
+    local number = tonumber(DistanceBox.Text)
+
+    if number and number > 0 then
+        ORBIT_DISTANCE = math.clamp(number, 1, 1000)
+    else
+        ORBIT_DISTANCE = DEFAULT_ORBIT_DISTANCE
+        DistanceBox.Text = tostring(DEFAULT_ORBIT_DISTANCE)
+    end
+end
+
+DistanceBox.FocusLost:Connect(UpdateDistance)
+
+--// ALVO
+local function GetTargetCharacter()
+    if not selectedTarget then
+        return nil
+    end
+
+    if targetIsNPC then
+        return selectedTarget
+    end
+
+    return selectedTarget.Character
+end
+
+local function GetTargetRoot()
+    local character = GetTargetCharacter()
+    if not character then return nil end
+
+    return character:FindFirstChild("HumanoidRootPart")
+        or character:FindFirstChild("UpperTorso")
+        or character:FindFirstChild("Torso")
+end
+
+--// RESTAURAR CÂMERA LOCAL
+local function RestoreLocalCamera()
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+
+    camera.CameraType = Enum.CameraType.Custom
+
+    local character = LocalPlayer.Character
+    local humanoid = character
+        and character:FindFirstChildOfClass("Humanoid")
+
+    if humanoid then
+        camera.CameraSubject = humanoid
+    end
+end
+
+--// ORBIT: CÂMERA SEGUE O HUMANOID DO ALVO
+local function ViewSelectedTarget()
+    local camera = workspace.CurrentCamera
+    local character = GetTargetCharacter()
+
+    if not camera or not character then return end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    camera.CameraType = Enum.CameraType.Custom
+    camera.CameraSubject = humanoid
+end
+
+--// LOCK ON: MIRA NA CABEÇA A CADA FRAME
+local function StopLockCamera()
+    pcall(function()
+        RunService:UnbindFromRenderStep(LockBindName)
+    end)
+end
+
+local function StartLockCamera()
+    StopLockCamera()
+
+    RunService:BindToRenderStep(
+        LockBindName,
+        Enum.RenderPriority.Camera.Value + 1,
+        function()
+            if destroyed or not lockOn or orbiting then
+                return
+            end
+
+            if not selectedTarget then
+                return
+            end
+
+            local camera = workspace.CurrentCamera
+            local localCharacter = LocalPlayer.Character
+            local localHumanoid = localCharacter
+                and localCharacter:FindFirstChildOfClass("Humanoid")
+
+            local targetCharacter = GetTargetCharacter()
+            local targetHead = targetCharacter
+                and targetCharacter:FindFirstChild("Head")
+
+            if not camera or not localHumanoid or not targetHead then
+                return
+            end
+
+            -- A câmera continua vinculada ao seu personagem.
+            camera.CameraType = Enum.CameraType.Custom
+
+            if camera.CameraSubject ~= localHumanoid then
+                camera.CameraSubject = localHumanoid
+            end
+
+            -- Atualiza a mira depois da atualização da câmera padrão.
+            camera.CFrame = CFrame.lookAt(
+                camera.CFrame.Position,
+                targetHead.Position
+            )
+        end
+    )
+end
+
+--// ESP
+local function RemoveESP()
+    if ESP then
+        ESP:Destroy()
+        ESP = nil
+    end
+end
+
+local function CreateESP(target)
+    RemoveESP()
+    if not target then return end
+
+    local character
+
+    if targetIsNPC then
+        character = target
+    else
+        character = target.Character
+    end
+
+    if not character then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "SelectedTargetESP"
+    highlight.Adornee = character
+    highlight.FillColor = Color3.fromRGB(255, 0, 0)
+    highlight.FillTransparency = 0.5
+    highlight.OutlineColor = Color3.fromRGB(255, 0, 0)
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = character
+
+    ESP = highlight
+end
+
+--// MORTE DO ALVO
+local function DisconnectTargetDeath()
+    if targetDeathConnection then
+        targetDeathConnection:Disconnect()
+        targetDeathConnection = nil
+    end
+end
+
+local ClearTarget
+
+local function WatchTargetDeath(target)
+    DisconnectTargetDeath()
+    if not target then return end
+
+    local function onDeath()
+        if not destroyed and selectedTarget == target then
+            ClearTarget()
+        end
+    end
+
+    if targetIsNPC then
+        local humanoid = target:FindFirstChildOfClass("Humanoid")
+
+        if humanoid then
+            targetDeathConnection = humanoid.Died:Connect(onDeath)
+        end
+    elseif target:IsA("Player") then
+        targetDeathConnection = target.CharacterRemoving:Connect(onDeath)
+
+        local character = target.Character
+        local humanoid = character
+            and character:FindFirstChildOfClass("Humanoid")
+
+        if humanoid then
+            humanoid.Died:Connect(onDeath)
+        end
+    end
+end
+
+--// LIMPAR ALVO
+ClearTarget = function()
+    orbiting = false
+    lockOn = false
+    autoTarget = false
+    lastDirection = nil
+    teleportTimer = 0
+    lockOnBeforeOrbit = false
+
+    StopLockCamera()
+    DisconnectTargetDeath()
+    RemoveESP()
+
+    selectedTarget = nil
+    targetIsNPC = false
+
+    OrbitButton.Text = "Orbit: OFF"
+    OrbitButton.BackgroundColor3 = OFF_COLOR
+    LockButton.BackgroundColor3 = NORMAL_COLOR
+    AutoButton.BackgroundColor3 = OFF_COLOR
+
+    RestoreLocalCamera()
+
+    for _, button in ipairs(PlayerList:GetChildren()) do
+        if button:IsA("TextButton") then
+            button.TextColor3 = Color3.new(1, 1, 1)
+        end
+    end
+end
+
+--// SELECIONAR ALVO
+local function SelectTarget(target, isNPC)
+    if orbiting then return end
+
+    if selectedTarget == target and targetIsNPC == isNPC then
+        ClearTarget()
+        return
+    end
+
+    StopLockCamera()
+
+    selectedTarget = target
+    targetIsNPC = isNPC
+    autoTarget = false
+
+    AutoButton.BackgroundColor3 = OFF_COLOR
+
+    WatchTargetDeath(target)
+
+    for _, button in ipairs(PlayerList:GetChildren()) do
+        if button:IsA("TextButton") then
+            local sameTarget = button:GetAttribute("TargetKey")
+                == (isNPC and target:GetDebugId() or target.Name)
+
+            button.TextColor3 = sameTarget
+                and SELECTED_COLOR
+                or Color3.new(1, 1, 1)
+        end
+    end
+
+    CreateESP(target)
+
+    if lockOn then
+        StartLockCamera()
+    end
+end
+
+--// VERIFICAR NPC
+local function IsNPC(model)
+    if not model:IsA("Model") then return false end
+    if Players:GetPlayerFromCharacter(model) then return false end
+
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+--// ATUALIZAR LISTA
+local function UpdatePlayerList()
+    if destroyed then return end
+
+    for _, child in ipairs(PlayerList:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+
+    Title.Text = showingNPCs and "NPCs" or "Orbit"
+    NPCButton.BackgroundColor3 = showingNPCs and LOCK_COLOR or NORMAL_COLOR
+
+    local targets = {}
+
+    if showingNPCs then
+        for _, object in ipairs(workspace:GetDescendants()) do
+            if IsNPC(object) then
+                table.insert(targets, object)
+            end
+        end
+    else
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                table.insert(targets, player)
+            end
+        end
+    end
+
+    table.sort(targets, function(a, b)
+        return a.Name:lower() < b.Name:lower()
+    end)
+
+    for _, target in ipairs(targets) do
+        local button = Instance.new("TextButton")
+        button.Size = UDim2.new(1, -8, 0, 30)
+        button.BackgroundColor3 = NORMAL_COLOR
+        button.BackgroundTransparency = 0.05
+        button.BorderSizePixel = 0
+        button.Text = target.Name
+        button.TextColor3 = (
+            selectedTarget == target
+            and targetIsNPC == showingNPCs
+        ) and SELECTED_COLOR or Color3.new(1, 1, 1)
+        button.TextSize = 13
+        button.Font = Enum.Font.Gotham
+        button.ZIndex = 12
+
+        -- Guarda a identificação como texto para evitar atributos inválidos.
+        local targetKey
+
+        if showingNPCs then
+            targetKey = target:GetDebugId()
+        else
+            targetKey = target.Name
+        end
+
+        button:SetAttribute("TargetKey", targetKey)
+        button.Parent = PlayerList
+
+        button.Activated:Connect(function()
+            SelectTarget(target, showingNPCs)
+        end)
+    end
+
+    task.defer(function()
+        if not destroyed then
+            PlayerList.CanvasSize = UDim2.new(
+                0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 5
+            )
+        end
+    end)
+end
+
+--// ORBIT
+local function StopOrbit()
+    orbiting = false
+    lastDirection = nil
+    teleportTimer = 0
+
+    OrbitButton.Text = "Orbit: OFF"
+    OrbitButton.BackgroundColor3 = OFF_COLOR
+
+    RestoreLocalCamera()
+
+    if lockOnBeforeOrbit and selectedTarget and GetTargetRoot() then
+        lockOn = true
+        LockButton.BackgroundColor3 = LOCK_COLOR
+        StartLockCamera()
+    else
+        lockOn = false
+        LockButton.BackgroundColor3 = NORMAL_COLOR
+        StopLockCamera()
+    end
+
+    lockOnBeforeOrbit = false
+end
+
+local function StartOrbit()
+    if not selectedTarget then
+        OrbitButton.Text = "Selecione alguém!"
+
+        task.delay(1, function()
+            if not destroyed and not orbiting then
+                OrbitButton.Text = "Orbit: OFF"
+            end
+        end)
+
+        return
+    end
+
+    if not GetTargetRoot() then
+        ClearTarget()
+        return
+    end
+
+    UpdateDistance()
+
+    lockOnBeforeOrbit = lockOn
+    lockOn = false
+    StopLockCamera()
+
+    LockButton.BackgroundColor3 = NORMAL_COLOR
+
+    orbiting = true
+    lastDirection = nil
+    teleportTimer = 0
+
+    OrbitButton.Text = "Orbit: ON"
+    OrbitButton.BackgroundColor3 = ON_COLOR
+
+    ViewSelectedTarget()
+end
+
+OrbitButton.Activated:Connect(function()
+    if orbiting then
+        StopOrbit()
+    else
+        StartOrbit()
+    end
+end)
+
+--// LOCK ON
+LockButton.Activated:Connect(function()
+    if orbiting or not selectedTarget then return end
+
+    if lockOn then
+        lockOn = false
+        StopLockCamera()
+
+        LockButton.BackgroundColor3 = NORMAL_COLOR
+        RestoreLocalCamera()
+    elseif GetTargetRoot() then
+        lockOn = true
+        LockButton.BackgroundColor3 = LOCK_COLOR
+
+        RestoreLocalCamera()
+        StartLockCamera()
+    end
+end)
+
+--// NPC
+NPCButton.Activated:Connect(function()
+    if orbiting then return end
+
+    showingNPCs = not showingNPCs
+    ClearTarget()
+    UpdatePlayerList()
+end)
+
+--// JOGADOR MAIS PRÓXIMO
+local function GetNearestPlayer()
+    local character = LocalPlayer.Character
+    local root = character
+        and character:FindFirstChild("HumanoidRootPart")
+
+    if not root then return nil end
+
+    local nearest
+    local nearestDistance = math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local targetCharacter = player.Character
+            local humanoid = targetCharacter
+                and targetCharacter:FindFirstChildOfClass("Humanoid")
+            local targetRoot = targetCharacter
+                and targetCharacter:FindFirstChild("HumanoidRootPart")
+
+            if humanoid and humanoid.Health > 0 and targetRoot then
+                local distance = (
+                    targetRoot.Position - root.Position
+                ).Magnitude
+
+                if distance < nearestDistance then
+                    nearestDistance = distance
+                    nearest = player
+                end
+            end
+        end
+    end
+
+    return nearest
+end
+
+--// AUTO TARGET
+AutoButton.Activated:Connect(function()
+    if orbiting then return end
+
+    if autoTarget then
+        autoTarget = false
+        AutoButton.BackgroundColor3 = OFF_COLOR
+        return
+    end
+
+    local nearest = GetNearestPlayer()
+
+    if nearest then
+        SelectTarget(nearest, false)
+        autoTarget = true
+        AutoButton.BackgroundColor3 = ON_COLOR
+    end
+end)
+
+--// ATUALIZAÇÃO DO ORBIT
+RunService.RenderStepped:Connect(function(deltaTime)
+    if destroyed or _G.__OrbitImpulsoRunToken ~= RunToken then
+        return
+    end
+
+    -- AUTO TARGET
+    if autoTarget and not orbiting then
+        local nearest = GetNearestPlayer()
+
+        if nearest then
+            if selectedTarget ~= nearest or targetIsNPC then
+                SelectTarget(nearest, false)
+                autoTarget = true
+                AutoButton.BackgroundColor3 = ON_COLOR
+            end
+        else
+            ClearTarget()
+        end
+    end
+
+    -- ORBIT
+    if not orbiting then return end
+
+    if not selectedTarget then
+        StopOrbit()
+        return
+    end
+
+    local myCharacter = LocalPlayer.Character
+    local targetCharacter = GetTargetCharacter()
+
+    if not myCharacter or not targetCharacter then
+        ClearTarget()
+        return
+    end
+
+    local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
+    local targetRoot = GetTargetRoot()
+
+    if not myRoot or not targetRoot then
+        ClearTarget()
+        return
+    end
+
+    teleportTimer += deltaTime
+
+    local interval = 1 / ORBIT_SPEED
+    if teleportTimer < interval then return end
+
+    teleportTimer = 0
+
+    local directions = {
+        targetRoot.CFrame.LookVector,
+        -targetRoot.CFrame.LookVector,
+        targetRoot.CFrame.RightVector,
+        -targetRoot.CFrame.RightVector
+    }
+
+    local availableDirections = {}
+
+    for _, direction in ipairs(directions) do
+        if direction ~= lastDirection then
+            table.insert(availableDirections, direction)
+        end
+    end
+
+    if #availableDirections == 0 then
+        availableDirections = directions
+    end
+
+    local direction = availableDirections[
+        math.random(1, #availableDirections)
+    ]
+
+    lastDirection = direction
+
+    local position = targetRoot.Position
+        + direction * ORBIT_DISTANCE
+
+    myRoot.CFrame = CFrame.lookAt(position, targetRoot.Position)
+end)
+
+--// OBSERVAR JOGADORES
+local function WatchPlayer(player)
+    if player == LocalPlayer then return end
+
+    player.CharacterAdded:Connect(function()
+        if _G.__OrbitImpulsoRunToken ~= RunToken or destroyed then
+            return
+        end
+
+        task.wait(0.1)
+
+        if selectedTarget == player and not targetIsNPC then
+            ClearTarget()
+        end
+    end)
+
+    player.CharacterRemoving:Connect(function()
+        if not destroyed and selectedTarget == player and not targetIsNPC then
+            ClearTarget()
+        end
+    end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    WatchPlayer(player)
+end
+
+Players.PlayerAdded:Connect(function(player)
+    WatchPlayer(player)
+    task.wait(0.2)
+
+    if not destroyed and not showingNPCs then
+        UpdatePlayerList()
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if selectedTarget == player and not targetIsNPC then
+        ClearTarget()
+    end
+
+    task.wait(0.1)
+
+    if not destroyed and not showingNPCs then
+        UpdatePlayerList()
+    end
+end)
+
+--// RESPAWN
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+
+    if destroyed then return end
+
+    if orbiting then
+        if selectedTarget and GetTargetRoot() then
+            ViewSelectedTarget()
+        else
+            ClearTarget()
+        end
+    else
+        RestoreLocalCamera()
+
+        if lockOn and selectedTarget then
+            StartLockCamera()
+        end
+    end
+end)
+
+--// MINIMIZAR
+MinimizeButton.Activated:Connect(function()
+    minimized = not minimized
+
+    if minimized then
+        local oldPosition = Main.Position
+
+        Main.Size = UDim2.new(0, 70, 0, 40)
+        Main.Position = UDim2.new(
+            oldPosition.X.Scale, oldPosition.X.Offset + 140,
+            oldPosition.Y.Scale, oldPosition.Y.Offset
+        )
+
+        PlayerList.Visible = false
+        DistanceLabel.Visible = false
+        DistanceBox.Visible = false
+        OrbitButton.Visible = false
+        Title.Visible = false
+        LockButton.Visible = false
+        NPCButton.Visible = false
+        AutoButton.Visible = false
+
+        MinimizeButton.Text = "+"
+        MinimizeButton.Position = UDim2.new(0, 4, 0, 6)
+        CloseButton.Position = UDim2.new(1, -32, 0, 6)
+    else
+        local oldPosition = Main.Position
+
+        Main.Size = UDim2.new(0, 210, 0, 300)
+        Main.Position = UDim2.new(
+            oldPosition.X.Scale, oldPosition.X.Offset - 140,
+            oldPosition.Y.Scale, oldPosition.Y.Offset
+        )
+
+        PlayerList.Visible = true
+        DistanceLabel.Visible = true
+        DistanceBox.Visible = true
+        OrbitButton.Visible = true
+        Title.Visible = true
+        LockButton.Visible = true
+        NPCButton.Visible = true
+        AutoButton.Visible = true
+
+        MinimizeButton.Text = "-"
+        AutoButton.Position = UDim2.new(1, -160, 0, 6)
+        LockButton.Position = UDim2.new(1, -128, 0, 6)
+        NPCButton.Position = UDim2.new(1, -96, 0, 6)
+        MinimizeButton.Position = UDim2.new(1, -64, 0, 6)
+        CloseButton.Position = UDim2.new(1, -32, 0, 6)
+    end
+end)
+
+--// IMPULSO: BOTÃO 5 ON/OFF, SEM TEMPORIZADOR
+local ImpulsoGui = Instance.new("ScreenGui")
+ImpulsoGui.Name = "ImpulsoAbility"
+ImpulsoGui.ResetOnSpawn = false
+ImpulsoGui.IgnoreGuiInset = true
+ImpulsoGui.DisplayOrder = 101
+ImpulsoGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ImpulsoGui.Parent = PlayerGui
+
+local slot = Instance.new("TextButton")
+slot.Name = "Ability5"
+slot.Size = UDim2.fromOffset(70, 68)
+slot.AnchorPoint = Vector2.new(0.5, 1)
+slot.Position = UDim2.new(0.5, 195, 1, -9)
+slot.BackgroundColor3 = OFF_COLOR
+slot.BackgroundTransparency = 0.25
+slot.BorderColor3 = Color3.fromRGB(25, 25, 25)
+slot.BorderSizePixel = 2
+slot.Text = ""
+slot.AutoButtonColor = false
+slot.ZIndex = 20
+slot.Parent = ImpulsoGui
+
+local number = Instance.new("TextLabel")
+number.BackgroundTransparency = 1
+number.Size = UDim2.new(1, 0, 0, 35)
+number.Position = UDim2.fromOffset(0, 2)
+number.Text = "5"
+number.TextColor3 = Color3.fromRGB(245, 245, 245)
+number.TextSize = 25
+number.Font = Enum.Font.Gotham
+number.ZIndex = 21
+number.Parent = slot
+
+local abilityName = Instance.new("TextLabel")
+abilityName.BackgroundTransparency = 1
+abilityName.Size = UDim2.new(1, -6, 0, 24)
+abilityName.Position = UDim2.fromOffset(3, 43)
+abilityName.Text = "Impulso"
+abilityName.TextColor3 = Color3.fromRGB(235, 235, 235)
+abilityName.TextSize = 16
+abilityName.Font = Enum.Font.Gotham
+abilityName.TextWrapped = true
+abilityName.ZIndex = 21
+abilityName.Parent = slot
+
+local function DesligarImpulso()
+    impulsoAtivo = false
+
+    if impulsoConnection then
+        impulsoConnection:Disconnect()
+        impulsoConnection = nil
+    end
+
+    if humanoidImpulso and humanoidImpulso.Parent then
+        if humanoidImpulso.Health > 0 then
+            humanoidImpulso.WalkSpeed = velocidadeOriginal or 16
+        end
+    end
+
+    humanoidImpulso = nil
+    velocidadeOriginal = nil
+
+    if slot and slot.Parent then
+        slot.BackgroundColor3 = OFF_COLOR
+    end
+end
+
+local function LigarImpulso()
+    local character = LocalPlayer.Character
+    local humanoid = character
+        and character:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid or humanoid.Health <= 0 then
+        return
+    end
+
+    humanoidImpulso = humanoid
+    velocidadeOriginal = humanoid.WalkSpeed
+    impulsoAtivo = true
+
+    humanoid.WalkSpeed = 100
+    slot.BackgroundColor3 = ON_COLOR
+
+    if impulsoConnection then
+        impulsoConnection:Disconnect()
+        impulsoConnection = nil
+    end
+
+    impulsoConnection = RunService.Heartbeat:Connect(function()
+        if destroyed or _G.__OrbitImpulsoRunToken ~= RunToken then
+            DesligarImpulso()
+            return
+        end
+
+        if not humanoidImpulso
+            or not humanoidImpulso.Parent
+            or humanoidImpulso.Health <= 0 then
+
+            DesligarImpulso()
+            return
+        end
+
+        humanoidImpulso.WalkSpeed = 100
+    end)
+end
+
+slot.Activated:Connect(function()
+    if impulsoAtivo then
+        DesligarImpulso()
+    else
+        LigarImpulso()
+    end
+end)
+
+--// FECHAR HUB
+CloseButton.Activated:Connect(function()
+    destroyed = true
+    orbiting = false
+    lockOn = false
+    autoTarget = false
+
+    StopLockCamera()
+    DesligarImpulso()
+    DisconnectTargetDeath()
+    RemoveESP()
+    RestoreLocalCamera()
+
+    if ScreenGui then
+        ScreenGui:Destroy()
+    end
+
+    if ImpulsoGui then
+        ImpulsoGui:Destroy()
+    end
+end)
+
+--// INICIALIZAÇÃO
+UpdatePlayerList()
+UpdateDistance()
+
+task.spawn(function()
+    while not destroyed
+        and _G.__OrbitImpulsoRunToken == RunToken do
+
+        task.wait(1)
+
+        if showingNPCs and not orbiting then
+            UpdatePlayerList()
+        end
+    end
+end)
+
+task.spawn(function()
+    while not destroyed
+        and _G.__OrbitImpulsoRunToken == RunToken do
+
+        task.wait(0.5)
+
+        if selectedTarget then
+            local character = GetTargetCharacter()
+
+            if character then
+                if not ESP or not ESP.Parent
+                    or ESP.Adornee ~= character then
+
+                    CreateESP(selectedTarget)
+                end
+            else
+                ClearTarget()
+            end
+        end
+    end
+end)
